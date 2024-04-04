@@ -15,7 +15,7 @@ try:
 except ImportError:
     import re
 import telegram.error
-from telegram import Update, InputMediaDocument, InputMediaAnimation, constants, BotCommand, BotCommandScopeChat
+from telegram import Update, InputMediaDocument, InputMediaAnimation, constants, BotCommand, BotCommandScopeChat, ParseMode
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, PicklePersistence
 
 from config import BOT_TOKEN, DEVELOPER_ID, IS_BOT_PRIVATE
@@ -24,6 +24,9 @@ from config import BOT_TOKEN, DEVELOPER_ID, IS_BOT_PRIVATE
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def create_twitter_hyperlink(link):
+    twitter_link = re.sub(r'(https?://(?:www\.)?twitter\.com/)(\S+)', r'[\1\2](\1\2)', link)
+    return twitter_link
 
 def extract_tweet_ids(update: Update) -> Optional[list[str]]:
     """Extract tweet IDs from message."""
@@ -50,23 +53,32 @@ def scrape_media(tweet_id: int) -> list[dict]:
     r.raise_for_status()
     return r.json()['media_extended']
 
+def scrape_text(tweet_id: int):
+    r = requests.get(f'https://api.vxtwitter.com/Twitter/status/{tweet_id}')
+    r.raise_for_status()
+    text = r.json()['text']
+    text = re.sub(r'https?://\S+', '', text)
+    return text
 
-def reply_media(update: Update, context: CallbackContext, tweet_media: list) -> bool:
+def reply_media(update: Update, context: CallbackContext, tweet_media, tweet_id: list) -> bool:
     """Reply to message with supported media."""
+    id = tweet_id
     photos = [media for media in tweet_media if media["type"] == "image"]
     gifs = [media for media in tweet_media if media["type"] == "gif"]
     videos = [media for media in tweet_media if media["type"] == "video"]
     if photos:
-        reply_photos(update, context, photos)
+        reply_photos(update, context, photos, id)
     if gifs:
-        reply_gifs(update, context, gifs)
+        reply_gifs(update, context, gifs, id)
     elif videos:
-        reply_videos(update, context, videos)
+        reply_videos(update, context, videos, id)
     return bool(photos or gifs or videos)
 
 
-def reply_photos(update: Update, context: CallbackContext, twitter_photos: list[dict]) -> None:
+def reply_photos(update: Update, context: CallbackContext, twitter_photos, tweet_id: list[dict]) -> None:
     """Reply with photo group."""
+    text = scrape_text(tweet_id)
+    hyperlink = create_twitter_hyperlink(update.effective_message.text)
     photo_group = []
     for photo in twitter_photos:
         photo_url = photo['url']
@@ -82,22 +94,26 @@ def reply_photos(update: Update, context: CallbackContext, twitter_photos: list[
         except requests.HTTPError:
             log_handling(update, 'info', 'orig quality not available, using original url')
             photo_group.append(InputMediaDocument(media=photo_url))
-    update.effective_message.reply_media_group(photo_group, quote=True)
+    update.effective_message.reply_photo(photo=photo_url, caption= f"{text}\n\n<a href='{update.effective_message.text}'>Twitter</a>", parse_mode=ParseMode.HTML, quote=True)
     log_handling(update, 'info', f'Sent photo group (len {len(photo_group)})')
     context.bot_data['stats']['media_downloaded'] += len(photo_group)
 
 
-def reply_gifs(update: Update, context: CallbackContext, twitter_gifs: list[dict]):
+def reply_gifs(update: Update, context: CallbackContext, twitter_gifs, tweet_id: list[dict]):
     """Reply with GIF animations."""
+    text = scrape_text(tweet_id)
+    hyperlink = create_twitter_hyperlink(update.effective_message.text)
     for gif in twitter_gifs:
         gif_url = gif['url']
         log_handling(update, 'info', f'Gif url: {gif_url}')
-        update.effective_message.reply_animation(animation=gif_url, quote=True)
+        update.effective_message.reply_animation(animation=gif_url, caption= f"{text}\n\n<a href='{update.effective_message.text}'>Twitter</a>", parse_mode=ParseMode.HTML, quote=True)
         log_handling(update, 'info', 'Sent gif')
         context.bot_data['stats']['media_downloaded'] += 1
 
 
-def reply_videos(update: Update, context: CallbackContext, twitter_videos: list[dict]):
+def reply_videos(update: Update, context: CallbackContext, twitter_videos, tweet_id: list[dict]):
+    text = scrape_text(tweet_id)
+    hyperlink = create_twitter_hyperlink(update.effective_message.text)
     """Reply with videos."""
     for video in twitter_videos:
         video_url = video['url']
@@ -106,7 +122,7 @@ def reply_videos(update: Update, context: CallbackContext, twitter_videos: list[
             request.raise_for_status()
             if (video_size := int(request.headers['Content-Length'])) <= constants.MAX_FILESIZE_DOWNLOAD:
                 # Try sending by url
-                update.effective_message.reply_video(video=video_url, quote=True)
+                update.effective_message.reply_video(video=video_url, caption= f"{text}\n\n<a href='{update.effective_message.text}'>Twitter</a>", parse_mode=ParseMode.HTML, quote=True)
                 log_handling(update, 'info', 'Sent video (download)')
             elif video_size <= constants.MAX_FILESIZE_UPLOAD:
                 log_handling(update, 'info', f'Video size ({video_size}) is bigger than '
@@ -131,7 +147,7 @@ def reply_videos(update: Update, context: CallbackContext, twitter_videos: list[
                                         f'{video_url}', quote=True)
         except (requests.HTTPError, KeyError, telegram.error.BadRequest, requests.exceptions.ConnectionError) as exc:
             log_handling(update, 'info', f'{exc.__class__.__qualname__}: {exc}')
-            log_handling(update, 'info', 'Error occurred when trying to send video, sending direct link')
+            log_handling(update, 'info', 'Error occurred when trying to send video, sending direct link.')
             update.effective_message.reply_text(f'Error occurred when trying to send video. Direct link:\n'
                                     f'{video_url}', quote=True)
         context.bot_data['stats']['media_downloaded'] += 1
@@ -212,6 +228,9 @@ def help_command(update: Update, context: CallbackContext) -> None:
     """Send a message when the command /help is issued."""
     update.effective_message.reply_text('Send tweet link here and I will download media in the best available quality for you')
 
+def issues_command(update: Update, context: CallbackContext) -> None:
+    update.effective_message.reply_text('This is a list of known issues with the bot. These are actively being worked on. Message @AteHerLikeACake if you find more issues.\n\n-Bug when sending a tweet with multiple types of media.\n\n-Bug when sending multiple images. Only attaches one.')
+
 
 def stats_command(update: Update, context: CallbackContext) -> None:
     """Send stats when the command /stats is issued."""
@@ -238,7 +257,6 @@ def deny_access(update: Update, context: CallbackContext) -> None:
                  f' userId {update.effective_user.id}')
     update.effective_message.reply_text(f'Access denied. Your id ({update.effective_user.id}) is not whitelisted')
 
-
 def handle_message(update: Update, context: CallbackContext) -> None:
     """Handle the user message. Reply with found supported media."""
     log_handling(update, 'info', 'Received message: ' + update.effective_message.text.replace("\n", ""))
@@ -260,10 +278,12 @@ def handle_message(update: Update, context: CallbackContext) -> None:
         log_handling(update, 'info', f'Scraping tweet ID {tweet_id}')
         try:
             media = scrape_media(tweet_id)
+            #so tweettext successfully gets the te
+            tweettext = scrape_text(tweet_id)
             found_tweets = True
             if media:
                 log_handling(update, 'info', f'tweet media: {media}')
-                if reply_media(update, context, media):
+                if reply_media(update, context, media, tweet_id):
                     found_media = True
                 else:
                     log_handling(update, 'info', f'Found unsupported media: {media[0]["type"]}')
@@ -350,3 +370,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
