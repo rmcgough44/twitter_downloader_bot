@@ -7,3 +7,6 @@ Telegram bot for downloading media from Twitter in best available quality. See h
 3. Install dependencies with `pip install -r requirements.txt`
 4. Start the bot with `python main.py`
 5. Now you can use commands `/start`, `/help`, `/stats`, `/resetstats` or send tweet links
+
+##Added Functionality
+Basically this will just reply with the text of a tweet and a hyperlink to the tweet two lines down. Be kind, this is my first time using github lol
